@@ -20,11 +20,11 @@ An Android app (Flutter) with two features:
 ```
 Android phone (Flutter, thin client)        Mac (always on)
 ┌────────────────────────────┐              ┌──────────────────────────────┐
-│ speech_to_text (STT)       │   events     │ buddy server (Dart, shelf)   │
+│ speech_to_text (STT)       │  requests    │ buddy server (Dart, shelf)   │
 │ interrupt button           ├─────────────▶│  - conversation history      │
 │                            │  Tailscale   │  - prompts + time context    │
 │ flutter_tts (speak)        │◀─────────────┤  - tool calls (set_alarm)    │
-│ subtitles                  │   commands   │                              │
+│ subtitles                  │  replies     │                              │
 │ alarm package (ring)       │              └──────────────┬───────────────┘
 └────────────────────────────┘                             │ HTTPS, Codex OAuth token
                                                            ▼
@@ -38,26 +38,28 @@ Repo layout:
 
 ### Protocol between app and server
 
-- **One HTTP endpoint:** `POST /event`. The app sends one event, and the server replies with a list of commands for the app to run in order. Plain HTTP; no WebSockets.
-- **Every event includes** `timezone`, the phone's IANA timezone (e.g. `America/Los_Angeles`, from `flutter_timezone`). The phone can travel, so the server doesn't assume the Mac's timezone.
+- **Plain HTTP with specific endpoints**, each with its own response shape. No WebSockets, and no generic event/command envelope.
+- **Requests that start a turn include** `timezone`, the phone's IANA timezone (e.g. `America/Los_Angeles`, from `flutter_timezone`). The phone can travel, so the server doesn't assume the Mac's timezone.
 
-| Event (app → server) | Sent when |
-|---|---|
-| `user_said {text}` | STT returns a final transcript |
-| `interrupted` | The user presses the interrupt button |
-| `alarm_failed {label, at, error}` | The app couldn't schedule an alarm it was told to set |
+| Endpoint | Request body | Called when | Response |
+|---|---|---|---|
+| `POST /message` | `{text, timezone}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if the turn was interrupted |
+| `POST /interrupt` | none | The user presses the interrupt button | `204` |
+| `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if interrupted |
 
-| Command (server → app) | App does |
-|---|---|
-| `say {text}` | Shows `text` as a subtitle and speaks it with TTS, then resumes listening |
-| `set_alarm {at, label}` | Schedules an alarm. `at` is an ISO 8601 instant in UTC. |
+- **Reply fields** (`200 {text, alarms}`):
+  - `alarms` is a list of `{at, label}`, with `at` an ISO 8601 instant in UTC. The app schedules these first.
+  - `text` is shown as a subtitle and spoken with TTS. Then the app resumes listening.
+- **Errors:**
+  - Bad input returns `400` with a plain-text reason.
+  - If the model call fails, the server still returns `200`, with `text` apologizing, so the user hears about it.
 
-The app has no logic beyond running commands and reporting events.
+The app has no logic beyond calling these endpoints and acting on their replies.
 
 ### Server responsibilities
 
 - **LLM access.**
-  - The server is Dart all the way down. There's no mature Dart library for the ChatGPT subscription, so it calls the Codex backend endpoint directly with `package:http`, in Responses API format.
+  - The server is Dart all the way down. There's no mature Dart library for the ChatGPT subscription, so it calls the Codex backend endpoint directly with `dart:io` `HttpClient`, in Responses API format.
   - **Login:** the user runs `codex login` once on the Mac. The server reads the token from `~/.codex/auth.json`, refreshes it when it expires, and writes the refreshed token back to the same file.
   - **Use the open-source Codex CLI (`openai/codex`) as the reference** for anything not listed below. Don't guess.
   - **Verified in a spike (2026-09-29):**
@@ -83,7 +85,7 @@ The app has no logic beyond running commands and reporting events.
   - the current local date and time, UTC offset and IANA timezone,
   - an instruction to keep replies short and conversational, because they're spoken aloud,
   - instructions for using `set_alarm`, including asking when the purpose or time is unclear.
-- **Time updates:** when a `user_said` event arrives **5 minutes or more** after the last message, append a message with the current local date and time, UTC offset and IANA timezone (from the event), just before the user message. Never edit earlier messages.
+- **Time updates:** when a `/message` request arrives **5 minutes or more** after the last message, append a message with the current local date and time, UTC offset and IANA timezone (from the request), just before the user message. Never edit earlier messages.
   - Use role **`developer`**. The endpoint rejects `system` messages in `input` with `400 System messages are not allowed`.
   - In the spike, the model used a `developer` time update correctly to answer "how long until my alarm?"
 - **Alarm tool.**
@@ -95,9 +97,9 @@ The app has no logic beyond running commands and reporting events.
     1. converts the time to UTC,
     2. records a tool result saying the alarm was sent to the phone,
     3. lets the LLM produce its spoken confirmation,
-    4. returns `set_alarm` followed by `say`.
-  - If the app later sends `alarm_failed`, the server adds it to the history and has the LLM tell the user.
-- **Interrupts:** on `interrupted`, cancel any in-flight LLM request, and record in the history that the user cut off the last reply.
+    4. returns the alarm in the reply's `alarms`, together with the confirmation in `text`.
+  - If the app later calls `/alarm-failed`, the server adds it to the history and has the LLM tell the user.
+- **Interrupts:** on `/interrupt`, cancel any in-flight LLM request, and record in the history that the user cut off the last reply.
 
 ### Network: Tailscale, not ngrok
 
@@ -111,17 +113,17 @@ The app has no logic beyond running commands and reporting events.
 ### App (Flutter): voice loop and UI
 
 ```
-listen → end of speech → user_said ─▶ server ─▶ [set_alarm] say → TTS done
-   ↑                                                                 │
-   └─────────────────────────────────────────────────────────────────┘
+listen → end of speech → POST /message ─▶ set alarms, speak text → TTS done
+   ↑                                                                   │
+   └───────────────────────────────────────────────────────────────────┘
 ```
 
 - **STT:** use `speech_to_text`, which wraps Android `SpeechRecognizer`. The OS decides when the user stops talking, so no push-to-talk is needed.
 - **TTS:** use `flutter_tts`, which uses Android's on-device TTS.
-- **Subtitles:** show the text of the current `say` while it's being spoken.
+- **Subtitles:** show the reply's `text` while it's being spoken.
 - **Interrupt button:** always visible while waiting on the server or speaking. Pressing it:
   1. stops TTS locally and immediately; don't wait for the network,
-  2. sends `interrupted`,
+  2. calls `POST /interrupt`,
   3. returns to listening.
 
   This is the only way to cut the AI off. Talking over it isn't supported, because the mic would hear the phone's own speaker.
@@ -136,7 +138,7 @@ listen → end of speech → user_said ─▶ server ─▶ [set_alarm] say → 
   - On the phone: Silero VAD (`vad` package) plus audio capture in voice-communication mode (OS echo cancellation).
   - On the Mac: Whisper STT and local TTS.
 
-  Moving STT and TTS to the server would add audio events and commands but leave the architecture unchanged.
+  Moving STT and TTS to the server would add audio endpoints but leave the architecture unchanged.
 
 ## Open questions
 

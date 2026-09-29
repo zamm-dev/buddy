@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:buddy_server/buddy_server.dart';
+import 'package:shelf/shelf.dart';
 import 'package:test/test.dart';
 import 'package:timezone/data/latest.dart' as tz_data;
 
@@ -43,11 +44,7 @@ Item setAlarm(String time, String label) => {
   'arguments': jsonEncode({'time': time, 'label': label}),
 };
 
-Map<String, dynamic> userSaid(String text) => {
-  'type': 'user_said',
-  'text': text,
-  'timezone': 'America/Los_Angeles',
-};
+const la = 'America/Los_Angeles';
 
 List<String> texts(List<Item> input) => [
   for (final item in input)
@@ -74,17 +71,19 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  test('alarm tool call becomes set_alarm then say, in UTC', () async {
+  test('alarm tool call returns the alarm in UTC plus the reply', () async {
     llm.outputs
       ..add([setAlarm('2026-09-30T07:00:00-07:00', 'gym')])
       ..add([say('Alarm set for 7 for the gym.')]);
 
-    final commands = await conversation().handle(userSaid('7am gym alarm'));
+    final reply = await conversation().message('7am gym alarm', timezone: la);
 
-    expect(commands, [
-      {'type': 'set_alarm', 'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'},
-      {'type': 'say', 'text': 'Alarm set for 7 for the gym.'},
-    ]);
+    expect(reply!.toJson(), {
+      'text': 'Alarm set for 7 for the gym.',
+      'alarms': [
+        {'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'},
+      ],
+    });
     final toolOutput = llm.inputs[1].last;
     expect(toolOutput['type'], 'function_call_output');
     expect(toolOutput['output'], 'Alarm sent to the phone.');
@@ -97,11 +96,10 @@ void main() {
         ..add([setAlarm('2026-09-30T07:00:00', 'gym')])
         ..add([say('What timezone?')]);
 
-      final commands = await conversation().handle(userSaid('7am gym alarm'));
+      final reply = await conversation().message('7am gym alarm', timezone: la);
 
-      expect(commands, [
-        {'type': 'say', 'text': 'What timezone?'},
-      ]);
+      expect(reply!.alarms, isEmpty);
+      expect(reply.text, 'What timezone?');
       expect(llm.inputs[1].last['output'], contains('UTC offset'));
     },
   );
@@ -109,7 +107,7 @@ void main() {
   test('instructions carry the phone-local time and timezone', () async {
     llm.outputs.add([say('Hi')]);
     final c = conversation();
-    await c.handle(userSaid('hello'));
+    await c.message('hello', timezone: la);
     expect(
       c.history.instructions,
       contains('Tuesday 2026-09-29T21:00:00-07:00 (America/Los_Angeles)'),
@@ -118,10 +116,10 @@ void main() {
 
   test('history survives a restart', () async {
     llm.outputs.add([say('Hi there')]);
-    await conversation().handle(userSaid('hello'));
+    await conversation().message('hello', timezone: la);
 
     llm.outputs.add([say('Still here')]);
-    await conversation().handle(userSaid('you there?'));
+    await conversation().message('you there?', timezone: la);
 
     expect(texts(llm.inputs.last), [
       'user: hello',
@@ -133,17 +131,16 @@ void main() {
   test('a time update precedes a message after a 5+ minute gap', () async {
     final c = conversation();
     llm.outputs.add([say('a')]);
-    await c.handle(userSaid('one'));
+    await c.message('one', timezone: la);
 
     now = now.add(const Duration(minutes: 4));
     llm.outputs.add([say('b')]);
-    await c.handle(userSaid('two'));
-    expect(texts(llm.inputs.last).last, 'user: two');
+    await c.message('two', timezone: la);
     expect(texts(llm.inputs.last)[2], 'user: two');
 
     now = now.add(const Duration(minutes: 5));
     llm.outputs.add([say('c')]);
-    await c.handle(userSaid('three'));
+    await c.message('three', timezone: la);
     expect(texts(llm.inputs.last).sublist(4), [
       'developer: Time update: Tuesday 2026-09-29T21:09:00-07:00 '
           '(America/Los_Angeles).',
@@ -155,35 +152,71 @@ void main() {
     final c = conversation();
     llm.hold = Completer();
     llm.outputs.add([say('a long answer')]);
-    final pending = c.handle(userSaid('tell me a story'));
+    final pending = c.message('tell me a story', timezone: la);
     await Future<void>.delayed(Duration.zero);
 
-    final interruptCommands = await c.handle({
-      'type': 'interrupted',
-      'timezone': 'America/Los_Angeles',
-    });
+    c.interrupt();
 
-    expect(interruptCommands, isEmpty);
-    expect(await pending, isEmpty);
+    expect(await pending, isNull);
     expect(texts(c.history.items), [
       'user: tell me a story',
       'developer: The user interrupted your last reply.',
     ]);
   });
 
-  test('bad events are rejected', () async {
+  test('alarm failure is reported to the model', () async {
     final c = conversation();
-    expect(
-      () => c.handle({'type': 'user_said', 'text': 'hi'}),
-      throwsA(isA<BadEvent>()),
+    llm.outputs.add([say('Sorry, that alarm failed.')]);
+    final reply = await c.alarmFailed(
+      label: 'gym',
+      at: '2026-09-30T14:00:00Z',
+      error: 'permission denied',
+      timezone: la,
     );
-    expect(
-      () => c.handle({'type': 'user_said', 'text': 'hi', 'timezone': 'Nope'}),
-      throwsA(isA<BadEvent>()),
+    expect(reply!.text, 'Sorry, that alarm failed.');
+    expect(texts(llm.inputs.last).single, contains('permission denied'));
+  });
+
+  group('HTTP API', () {
+    late Handler handler;
+    setUp(() => handler = api(conversation()));
+
+    Future<Response> post(String path, [Object? body]) async => handler(
+      Request(
+        'POST',
+        Uri.parse('http://buddy/$path'),
+        body: body == null ? null : jsonEncode(body),
+      ),
     );
-    expect(
-      () => c.handle({'type': 'dance', 'timezone': 'America/Los_Angeles'}),
-      throwsA(isA<BadEvent>()),
-    );
+
+    test('POST /message returns text and alarms', () async {
+      llm.outputs.add([say('Hi')]);
+      final res = await post('message', {'text': 'hello', 'timezone': la});
+      expect(res.statusCode, 200);
+      expect(jsonDecode(await res.readAsString()), {
+        'text': 'Hi',
+        'alarms': <Object>[],
+      });
+    });
+
+    test('POST /interrupt returns 204', () async {
+      expect((await post('interrupt')).statusCode, 204);
+    });
+
+    test('bad input returns 400', () async {
+      expect((await post('message', {'text': 'hi'})).statusCode, 400);
+      expect(
+        (await post('message', {'text': 'hi', 'timezone': 'Nope'})).statusCode,
+        400,
+      );
+      expect((await post('message', 'not an object')).statusCode, 400);
+    });
+
+    test('model failure is spoken, not silent', () async {
+      // No queued output: the fake throws.
+      final res = await post('message', {'text': 'hello', 'timezone': la});
+      expect(res.statusCode, 200);
+      expect(await res.readAsString(), contains("couldn't reach the AI"));
+    });
   });
 }
