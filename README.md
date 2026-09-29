@@ -58,3 +58,7 @@ To run the documentation site locally:
 cd docs
 uv run mkdocs serve
 ```
+
+## License
+
+TBD.
