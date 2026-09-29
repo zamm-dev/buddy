@@ -24,12 +24,12 @@ Android phone (Flutter, thin client)        Mac (always on)
 │ interrupt button           ├─────────────▶│  - conversation history      │
 │                            │  Tailscale   │  - prompts + time context    │
 │ flutter_tts (speak)        │◀─────────────┤  - tool calls (set_alarm)    │
-│ subtitles                  │   commands   │           │                  │
-│ alarm package (ring)       │              │           ▼ localhost        │
-└────────────────────────────┘              │ OpenAI-compatible proxy on   │
-                                            │ the ChatGPT subscription     │
-                                            │ (Codex OAuth)                │
-                                            └──────────────────────────────┘
+│ subtitles                  │   commands   │                              │
+│ alarm package (ring)       │              └──────────────┬───────────────┘
+└────────────────────────────┘                             │ HTTPS, Codex OAuth token
+                                                           ▼
+                                            ChatGPT backend (Codex endpoint,
+                                            billed to the ChatGPT subscription)
 ```
 
 Repo layout:
@@ -57,8 +57,10 @@ The app has no logic beyond running commands and reporting events.
 ### Server responsibilities
 
 - **LLM access.**
-  - An **existing** proxy on the Mac logs in with Codex OAuth and exposes an OpenAI-compatible API on localhost. ChatMock is one candidate; verify it before adopting it. Don't write our own OAuth handling.
-  - The server calls that proxy. The token never leaves the Mac.
+  - The server is Dart all the way down. There's no mature Dart library for the ChatGPT subscription, so it calls the Codex backend endpoint directly with `package:http`, in Responses API format.
+  - **Login:** the user runs `codex login` once on the Mac. The server reads the token from `~/.codex/auth.json`, refreshes it when it expires, and writes the refreshed token back to the same file.
+  - **Use the open-source Codex CLI (`openai/codex`) as the reference** for the endpoint URL, required headers, request fields and the token refresh flow. Don't guess them.
+  - The token never leaves the Mac.
   - This route covers text models only. The Realtime (voice) API doesn't accept ChatGPT subscription tokens, so STT and TTS stay on the phone.
 - **Conversation history.**
   - A single ongoing conversation, persisted on the Mac so it survives app and server restarts.
@@ -85,11 +87,10 @@ The app has no logic beyond running commands and reporting events.
 
 - **Use Tailscale.**
   - The phone reaches the buddy server over a private tailnet. The server isn't on the public internet, so it needs no auth of its own.
-  - The proxy binds to localhost only.
 - **Not ngrok,** because it would publish a public URL to an endpoint that spends the user's subscription.
 - **Trade-offs:**
   - Android allows one active VPN at a time, so Tailscale must be the one that's on.
-  - The Mac must be awake and running the server and the proxy. If it isn't, chat fails but **alarms still ring**, because they're scheduled locally on the phone.
+  - The Mac must be awake and running the server. If it isn't, chat fails but **alarms still ring**, because they're scheduled locally on the phone.
 
 ### App (Flutter): voice loop and UI
 
@@ -123,6 +124,6 @@ listen → end of speech → user_said ─▶ server ─▶ [set_alarm] say → 
 
 ## Open questions
 
-- Which proxy to use on the Mac. Check that it's maintained, supports tool calling, works with the current Codex OAuth flow, and accepts system messages in the middle of a conversation.
+- Unverified: does the Codex endpoint accept our custom `set_alarm` tool and system messages in the middle of a conversation? Spike this first. If mid-conversation system messages are rejected, put the time note at the start of the user message instead.
 - History will eventually outgrow the model's context window. Decide how to trim it (e.g. send only the most recent N messages), or whether to summarize old messages.
 - Where the server URL (the Mac's tailnet address) is configured: a settings field in the app, or a build-time constant.
