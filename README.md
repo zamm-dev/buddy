@@ -36,7 +36,7 @@ cd server
 HOST=<mac-tailscale-ip> dart run bin/server.dart
 ```
 
-It listens on `127.0.0.1:8787` by default; set `HOST` to the Mac's Tailscale IP so the phone can reach it. History is kept in `~/.buddy/history.jsonl`. Tests: `cd server && dart test`.
+It listens on `127.0.0.1:8787` by default; set `HOST` to the Mac's Tailscale IP so the phone can reach it. History is kept in SQLite at `~/.buddy/buddy.db` (override with `BUDDY_DB`). Tests: `cd server && dart test`.
 
 ## Pre-commit hooks
 

@@ -83,8 +83,10 @@ The app has no logic beyond calling these endpoints and acting on their replies.
   - This route covers text models only. The Realtime (voice) API doesn't accept ChatGPT subscription tokens, so STT and TTS stay on the phone.
 - **Conversation history.**
   - A single ongoing conversation, persisted on the Mac so it survives app and server restarts.
-  - Store it as an append-only JSON Lines file, one message per line: system, user, assistant, tool calls and tool results.
-  - Records are never rewritten. The one kind of change, trimming an interrupted reply, is itself appended as a record (`{"at", "heard"}`) and re-applied when the file loads.
+  - **Stored in SQLite** (`sqlite3` package; default `~/.buddy/buddy.db`). It's the canonical history: the model is sent exactly what's in it.
+    - The `conversation` table has one row, holding the system prompt and start time.
+    - The `items` table has one row per Responses API item (message, function call, tool result), stored as JSON with a timestamp.
+  - Rows are only appended, except when an interrupt trims the last reply. That update or delete happens in a transaction.
 - **System prompt:** sent as the request's `instructions` field. It's written once at the start of the conversation and never rewritten. It contains:
   - the current local date and time, UTC offset and IANA timezone,
   - an instruction to keep replies short and conversational, because they're spoken aloud,
