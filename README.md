@@ -12,11 +12,13 @@ flutter pub get
 
 ## Run
 
+The app is Android-only and needs the server (below) running on the Mac, reachable over Tailscale:
+
 ```bash
-flutter run -d chrome
+flutter run -d <android-device> --dart-define=BUDDY_SERVER=http://<mac-tailscale-ip>:8787/
 ```
 
-This launches the starter counter app ("Flutter Demo Home Page") in Chrome. Use `flutter devices` to see other targets (macOS, iOS simulator, Android emulator).
+Use `flutter devices` to find the device ID.
 
 ## Test
 

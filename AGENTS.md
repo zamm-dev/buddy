@@ -131,6 +131,7 @@ listen → end of speech → POST /message ─▶ set alarms, speak text → TTS
    └───────────────────────────────────────────────────────────────────┘
 ```
 
+- **Server URL:** a build-time constant, `--dart-define=BUDDY_SERVER=http://<mac-tailscale-ip>:8787/`.
 - **STT:** use `speech_to_text`, which wraps Android `SpeechRecognizer`. The OS decides when the user stops talking, so no push-to-talk is needed.
 - **TTS:** use `flutter_tts`, which uses Android's on-device TTS.
 - **Subtitles:** show the reply's `text` while it's being spoken.
@@ -158,4 +159,3 @@ listen → end of speech → POST /message ─▶ set alarms, speak text → TTS
 ## Open questions
 
 - History will eventually outgrow the model's context window. Decide how to trim it (e.g. send only the most recent N messages), or whether to summarize old messages.
-- Where the server URL (the Mac's tailnet address) is configured: a settings field in the app, or a build-time constant.

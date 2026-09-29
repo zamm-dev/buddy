@@ -1,122 +1,199 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-void main() {
-  runApp(const MyApp());
+import 'package:alarm/alarm.dart';
+import 'package:alarm/utils/alarm_set.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import 'api.dart';
+import 'platform.dart';
+import 'voice_loop.dart';
+
+/// The Mac's buddy server, e.g. `http://100.101.102.103:8787/`.
+/// Build with `--dart-define=BUDDY_SERVER=<url>`.
+const serverUrl = String.fromEnvironment('BUDDY_SERVER');
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Alarm.init();
+  runApp(const BuddyApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class BuddyApp extends StatelessWidget {
+  const BuddyApp({super.key});
 
-  // This widget is the root of your application.
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'buddy',
+    theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+    darkTheme: ThemeData(
+      colorSchemeSeed: Colors.teal,
+      brightness: Brightness.dark,
+      useMaterial3: true,
+    ),
+    home: const HomePage(),
+  );
+}
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  VoiceLoop? _loop;
+  String? _setupError;
+  AlarmSettings? _ringing;
+  StreamSubscription<AlarmSet>? _ringingSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _ringingSub = Alarm.ringing.listen(
+      (set) => setState(() => _ringing = set.alarms.firstOrNull),
+    );
+    unawaited(_start());
+  }
+
+  Future<void> _start() async {
+    if (serverUrl.isEmpty) {
+      return setState(
+        () => _setupError =
+            'No server configured. Build with '
+            '--dart-define=BUDDY_SERVER=http://<mac-tailscale-ip>:8787/',
+      );
+    }
+    await Permission.notification.request();
+    await Permission.scheduleExactAlarm.request();
+    final ears = SttEars();
+    if (!await ears.init()) {
+      return setState(
+        () => _setupError =
+            'Speech recognition is unavailable or the microphone '
+            'permission was denied.',
+      );
+    }
+    final loop = VoiceLoop(
+      api: BuddyApi(Uri.parse(serverUrl)),
+      ears: ears,
+      mouth: TtsMouth(),
+      alarms: PhoneAlarmClock(),
+      timezone: () async =>
+          (await FlutterTimezone.getLocalTimezone()).identifier,
+    );
+    setState(() => _loop = loop);
+    unawaited(loop.run());
+  }
+
+  @override
+  void dispose() {
+    unawaited(_ringingSub?.cancel());
+    _loop?.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+    final ringing = _ringing;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ringing != null
+              ? _Ringing(ringing)
+              : _setupError != null
+              ? Center(child: Text(_setupError!, textAlign: TextAlign.center))
+              : _loop == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListenableBuilder(
+                  listenable: _loop!,
+                  builder: (context, _) => _Conversation(_loop!),
+                ),
+        ),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+class _Conversation extends StatelessWidget {
+  const _Conversation(this.loop);
+  final VoiceLoop loop;
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(switch (loop.state) {
+          VoiceState.listening => 'Listening…',
+          VoiceState.thinking => 'Thinking…',
+          VoiceState.speaking => 'Speaking',
+        }, style: theme.textTheme.labelLarge),
+        const SizedBox(height: 16),
+        Text(
+          loop.userText,
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ),
+        Expanded(
+          child: Center(
+            child: SingleChildScrollView(
+              child: Text(
+                loop.subtitle,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.headlineSmall,
+              ),
+            ),
+          ),
+        ),
+        if (loop.state != VoiceState.listening)
+          FilledButton.icon(
+            onPressed: loop.interrupt,
+            icon: const Icon(Icons.stop),
+            label: const Text('Interrupt'),
+            style: FilledButton.styleFrom(
+              minimumSize: const Size.fromHeight(72),
+              textStyle: theme.textTheme.titleLarge,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _Ringing extends StatelessWidget {
+  const _Ringing(this.alarm);
+  final AlarmSettings alarm;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Spacer(),
+        const Icon(Icons.alarm, size: 96),
+        const SizedBox(height: 24),
+        Text(
+          alarm.notificationSettings.body,
+          textAlign: TextAlign.center,
+          style: theme.textTheme.headlineMedium,
+        ),
+        const Spacer(),
+        FilledButton(
+          onPressed: () => Alarm.stop(alarm.id),
+          style: FilledButton.styleFrom(
+            minimumSize: const Size.fromHeight(72),
+            textStyle: theme.textTheme.titleLarge,
+          ),
+          child: const Text('Stop'),
+        ),
+      ],
     );
   }
 }
