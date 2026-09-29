@@ -8,7 +8,9 @@ repos:
         types: [dart]
       - id: flutter-analyze
         name: flutter analyze
-        entry: flutter analyze
+        # Git sets GIT_DIR for hooks; in a worktree it points at this repo and
+        # breaks Flutter's own SDK version check ("0.0.0-unknown").
+        entry: env -u GIT_DIR flutter analyze
         language: system
         types: [dart]
         pass_filenames: false

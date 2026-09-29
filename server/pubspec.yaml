@@ -1,0 +1,9 @@
+name: buddy_server
+description: Conversation backend for buddy. Runs on the Mac.
+publish_to: 'none'
+version: 1.0.0
+
+environment:
+  sdk: ^3.13.4
+
+resolution: workspace
