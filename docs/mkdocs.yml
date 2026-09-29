@@ -3,3 +3,19 @@ site_url: https://zamm-dev.github.io/buddy/
 repo_url: https://github.com/zamm-dev/buddy
 theme:
   name: material
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+nav:
+  - Home: index.md
+  - Usage:
+      - Overview: usage/index.md
+  - Development:
+      - Overview: development/index.md
+  - Code base:
+      - Overview: code-base/index.md
+      - App: code-base/app.md
+      - Documentation site: code-base/docs-site.md
