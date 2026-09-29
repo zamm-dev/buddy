@@ -15,6 +15,7 @@ nav:
       - Overview: usage/index.md
   - Development:
       - Overview: development/index.md
+      - Deployment: development/deploy.md
   - Code base:
       - Overview: code-base/index.md
       - App: code-base/app.md
