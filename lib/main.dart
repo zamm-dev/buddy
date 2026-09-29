@@ -5,7 +5,9 @@ import 'package:alarm/utils/alarm_set.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'alarm_history.dart';
 import 'api.dart';
 import 'platform.dart';
 import 'voice_loop.dart';
@@ -17,11 +19,29 @@ const serverUrl = String.fromEnvironment('BUDDY_SERVER');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Alarm.init();
-  runApp(const BuddyApp());
+  final prefs = await SharedPreferencesWithCache.create(
+    cacheOptions: const SharedPreferencesWithCacheOptions(
+      allowList: {_alarmHistoryKey},
+    ),
+  );
+  runApp(
+    BuddyApp(
+      alarmHistory: serverUrl.isEmpty
+          ? null
+          : AlarmHistory(
+              api: BuddyApi(Uri.parse(serverUrl)),
+              read: () => prefs.getString(_alarmHistoryKey),
+              write: (json) => prefs.setString(_alarmHistoryKey, json),
+            ),
+    ),
+  );
 }
 
+const _alarmHistoryKey = 'alarm_history';
+
 class BuddyApp extends StatelessWidget {
-  const BuddyApp({super.key});
+  const BuddyApp({super.key, required this.alarmHistory});
+  final AlarmHistory? alarmHistory;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
@@ -32,12 +52,13 @@ class BuddyApp extends StatelessWidget {
       brightness: Brightness.dark,
       useMaterial3: true,
     ),
-    home: const HomePage(),
+    home: HomePage(alarmHistory: alarmHistory),
   );
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, required this.alarmHistory});
+  final AlarmHistory? alarmHistory;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -77,10 +98,11 @@ class _HomePageState extends State<HomePage> {
       );
     }
     final loop = VoiceLoop(
-      api: BuddyApi(Uri.parse(serverUrl)),
+      api: widget.alarmHistory!.api,
       ears: ears,
       mouth: TtsMouth(),
       alarms: PhoneAlarmClock(),
+      onAlarmsSynced: () => unawaited(widget.alarmHistory!.refresh()),
       timezone: () async =>
           (await FlutterTimezone.getLocalTimezone()).identifier,
     );
@@ -107,7 +129,7 @@ class _HomePageState extends State<HomePage> {
               : Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const _NextAlarm(),
+                    _NextAlarm(history: widget.alarmHistory),
                     const SizedBox(height: 24),
                     Expanded(
                       child: _setupError != null
@@ -134,7 +156,8 @@ class _HomePageState extends State<HomePage> {
 
 /// The soonest scheduled alarm, or that none is set.
 class _NextAlarm extends StatelessWidget {
-  const _NextAlarm();
+  const _NextAlarm({required this.history});
+  final AlarmHistory? history;
 
   @override
   Widget build(BuildContext context) {
@@ -150,6 +173,17 @@ class _NextAlarm extends StatelessWidget {
         return Card(
           child: ListTile(
             leading: Icon(next == null ? Icons.alarm_off : Icons.alarm),
+            trailing: history == null
+                ? null
+                : IconButton(
+                    tooltip: 'Alarm history',
+                    icon: const Icon(Icons.history),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => AlarmHistoryPage(history: history!),
+                      ),
+                    ),
+                  ),
             title: Text(
               next == null
                   ? 'No alarm set'
@@ -161,9 +195,9 @@ class _NextAlarm extends StatelessWidget {
                 ? null
                 : Text(
                     alarms.length > 1
-                        ? '${next.notificationSettings.body} '
+                        ? '${next.notificationSettings.title} '
                               '(+${alarms.length - 1} more)'
-                        : next.notificationSettings.body,
+                        : next.notificationSettings.title,
                   ),
           ),
         );
@@ -234,7 +268,7 @@ class _Ringing extends StatelessWidget {
         const Icon(Icons.alarm, size: 96),
         const SizedBox(height: 24),
         Text(
-          alarm.notificationSettings.body,
+          alarm.notificationSettings.title,
           textAlign: TextAlign.center,
           style: theme.textTheme.headlineMedium,
         ),

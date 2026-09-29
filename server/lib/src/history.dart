@@ -3,14 +3,20 @@ import 'dart:io';
 
 import 'package:sqlite3/sqlite3.dart';
 
+import 'alarms.dart';
 import 'codex_client.dart';
 
 /// The single ongoing conversation, stored in SQLite. This is the canonical
 /// history: what the model is sent is exactly what's in the `items` table.
 class History {
-  History(String path) : _db = _open(path);
+  History(String path) : this._(_open(path));
+
+  History._(this._db) : alarms = Alarms(_db);
 
   final Database _db;
+
+  /// The alarms set during the conversation, in the same database.
+  final Alarms alarms;
 
   static Database _open(String path) {
     File(path).parent.createSync(recursive: true);

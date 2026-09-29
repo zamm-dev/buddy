@@ -19,9 +19,11 @@ abstract interface class Mouth {
   Future<void> stop();
 }
 
-/// Schedules alarms on the phone. Throws if it can't.
+/// The phone's alarms.
 abstract interface class AlarmClock {
-  Future<void> schedule(AlarmRequest alarm);
+  /// Makes the phone's upcoming alarms exactly [upcoming]: sets new or changed
+  /// ones and cancels the rest. Returns the alarms that couldn't be set.
+  Future<List<(BuddyAlarm, Object)>> sync(List<BuddyAlarm> upcoming);
 }
 
 enum VoiceState { listening, thinking, speaking }
@@ -36,6 +38,7 @@ class VoiceLoop extends ChangeNotifier {
     required this.mouth,
     required this.alarms,
     required this.timezone,
+    this.onAlarmsSynced,
   });
 
   final BuddyApi api;
@@ -43,6 +46,9 @@ class VoiceLoop extends ChangeNotifier {
   final Mouth mouth;
   final AlarmClock alarms;
   final Future<String> Function() timezone;
+
+  /// Called after each reply's alarms are synced, e.g. to refresh caches.
+  final void Function()? onAlarmsSynced;
 
   VoiceState state = VoiceState.listening;
 
@@ -109,16 +115,10 @@ class VoiceLoop extends ChangeNotifier {
     }
     if (reply == null) return;
 
-    // Alarms are scheduled even if the user interrupted: the server has
-    // already recorded them as set.
-    final failures = <(AlarmRequest, Object)>[];
-    for (final alarm in reply.alarms) {
-      try {
-        await alarms.schedule(alarm);
-      } catch (e) {
-        failures.add((alarm, e));
-      }
-    }
+    // Alarms are synced even if the user interrupted: the server has already
+    // recorded the changes.
+    final failures = await alarms.sync(reply.alarms);
+    onAlarmsSynced?.call();
 
     if (!_interrupted && reply.text.isNotEmpty) {
       subtitle = reply.text;
