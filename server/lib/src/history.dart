@@ -5,8 +5,10 @@ import 'codex_client.dart';
 
 /// The single ongoing conversation, persisted as append-only JSON Lines.
 ///
-/// The first line holds the system prompt (`{"at", "instructions"}`); every
-/// other line holds one Responses API item (`{"at", "item"}`).
+/// The first line holds the system prompt (`{"at", "instructions"}`). Other
+/// lines hold one Responses API item (`{"at", "item"}`), or record that the
+/// user cut off the last reply after hearing only some of it
+/// (`{"at", "heard"}`); that trim is re-applied on load.
 class History {
   History(this.file) {
     if (!file.existsSync()) return;
@@ -15,6 +17,7 @@ class History {
       final record = jsonDecode(line) as Map<String, dynamic>;
       _instructions ??= record['instructions'] as String?;
       if (record['item'] case final Item item) _items.add(item);
+      if (record['heard'] case final String heard) _trimLastReply(heard);
       _lastAt = DateTime.parse(record['at'] as String);
     }
   }
@@ -46,6 +49,42 @@ class History {
     ], at);
   }
 
+  /// Trims the assistant text of the last turn to what the user [heard]
+  /// before interrupting, so the model only sees what was actually said.
+  /// Tool calls in that turn are kept.
+  void trimLastReply(String heard, DateTime at) {
+    _trimLastReply(heard);
+    _write([
+      {'at': _stamp(at), 'heard': heard},
+    ], at);
+  }
+
+  void _trimLastReply(String heard) {
+    // The last turn is everything after the last user or developer message.
+    final turnStart =
+        _items.lastIndexWhere(
+          (item) =>
+              item['type'] == 'message' &&
+              (item['role'] == 'user' || item['role'] == 'developer'),
+        ) +
+        1;
+    // The app heard the turn's assistant messages joined with spaces.
+    var remaining = heard.length;
+    for (var i = turnStart; i < _items.length; i++) {
+      final item = _items[i];
+      if (item['type'] != 'message' || item['role'] != 'assistant') continue;
+      final text = messageText(item);
+      if (remaining >= text.length) {
+        remaining -= text.length + 1;
+      } else if (remaining > 0) {
+        _items[i] = assistantMessage(text.substring(0, remaining).trimRight());
+        remaining = 0;
+      } else {
+        _items.removeAt(i--);
+      }
+    }
+  }
+
   void _write(List<Map<String, dynamic>> records, DateTime at) {
     file.parent.createSync(recursive: true);
     file.writeAsStringSync(
@@ -58,3 +97,16 @@ class History {
 
   static String _stamp(DateTime at) => at.toUtc().toIso8601String();
 }
+
+Item assistantMessage(String text) => {
+  'type': 'message',
+  'role': 'assistant',
+  'content': [
+    {'type': 'output_text', 'text': text},
+  ],
+};
+
+/// The text of a message item.
+String messageText(Item message) => (message['content'] as List)
+    .map((part) => (part as Map)['text'] ?? '')
+    .join();

@@ -80,13 +80,28 @@ class Conversation {
   final DateTime Function() _clock;
   Completer<void>? _inFlight;
 
-  /// The user said [text]. Returns null if the turn was interrupted.
-  Future<Reply?> message(String text, {required String timezone}) {
+  /// The user said [text]. If they cut off the previous reply, [heard] is the
+  /// part of it that was spoken; the rest is dropped from history. Returns
+  /// null if a newer request superseded this turn.
+  Future<Reply?> message(
+    String text, {
+    required String timezone,
+    String? heard,
+  }) {
     if (text.trim().isEmpty) throw BadRequest('text must not be empty');
     final location = _start(timezone);
     final now = _clock();
     final lastAt = history.lastAt;
+    if (heard != null) history.trimLastReply(heard, now);
     history.append([
+      if (heard != null)
+        _message(
+          'developer',
+          heard.isEmpty
+              ? 'The user interrupted you before hearing any of your reply.'
+              : 'The user interrupted you; they only heard your reply up to '
+                    'where it ends above.',
+        ),
       if (lastAt != null && now.difference(lastAt) >= timeUpdateGap)
         _message('developer', 'Time update: ${_now(location)}.'),
       _message('user', text),
@@ -94,17 +109,8 @@ class Conversation {
     return _turn();
   }
 
-  /// The user pressed the interrupt button.
-  void interrupt() {
-    _cancelInFlight();
-    if (history.instructions == null) return;
-    history.append([
-      _message('developer', 'The user interrupted your last reply.'),
-    ], _clock());
-  }
-
-  /// The phone couldn't schedule an alarm it was given. Returns null if the
-  /// turn was interrupted.
+  /// The phone couldn't schedule an alarm it was given. Returns null if a
+  /// newer request superseded this turn.
   Future<Reply?> alarmFailed({
     required String label,
     required String at,
@@ -152,9 +158,9 @@ class Conversation {
         for (final item in output) {
           switch (item['type']) {
             case 'message':
-              final text = _text(item);
+              final text = messageText(item);
               if (text.isEmpty) continue;
-              turnItems.add(_message('assistant', text));
+              turnItems.add(assistantMessage(text));
               said.add(text);
             case 'function_call':
               calledTool = true;
@@ -265,14 +271,7 @@ developer messages starting with "Time update:" give the current time.''';
     'type': 'message',
     'role': role,
     'content': [
-      {
-        'type': role == 'assistant' ? 'output_text' : 'input_text',
-        'text': text,
-      },
+      {'type': 'input_text', 'text': text},
     ],
   };
-
-  static String _text(Item message) => (message['content'] as List)
-      .map((part) => (part as Map)['text'] ?? '')
-      .join();
 }

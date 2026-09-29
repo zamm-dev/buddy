@@ -20,13 +20,14 @@ Handler api(Conversation conversation) =>
               (body) => conversation.message(
                 _string(body, 'text'),
                 timezone: _string(body, 'timezone'),
+                heard: switch (body['heard']) {
+                  null => null,
+                  final String heard => heard,
+                  _ => throw BadRequest('heard must be a string'),
+                },
               ),
             ),
           )
-          ..post('/interrupt', (Request request) {
-            conversation.interrupt();
-            return Response(HttpStatus.noContent);
-          })
           ..post(
             '/alarm-failed',
             (Request request) => _reply(
@@ -41,7 +42,8 @@ Handler api(Conversation conversation) =>
           ))
         .call;
 
-/// 200 with the reply, 204 if the turn was interrupted, 400 for bad input.
+/// 200 with the reply, 204 if a newer request superseded the turn, 400 for
+/// bad input.
 Future<Response> _reply(
   Request request,
   Future<Reply?> Function(Map<String, dynamic> body) turn,
