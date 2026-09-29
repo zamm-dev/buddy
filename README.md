@@ -25,3 +25,24 @@ flutter test
 ```
 
 Expected output ends with `All tests passed!`.
+
+## Pre-commit hooks
+
+Commits run these checks via [pre-commit](https://pre-commit.com):
+
+- `dart format` — formatting
+- `flutter analyze` — linting / static analysis
+
+Tests run in CI, not in the hooks.
+
+Setup for new contributors:
+
+```bash
+pre-commit install && pre-commit install --hook-type post-commit
+```
+
+Run manually:
+
+```bash
+pre-commit run --all-files
+```
