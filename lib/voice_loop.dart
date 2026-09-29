@@ -63,9 +63,17 @@ class VoiceLoop extends ChangeNotifier {
     _running = true;
     while (_running) {
       _set(VoiceState.listening);
+      final started = DateTime.now();
       final text = await ears.listen();
       if (!_running) return;
-      if (text == null || text.trim().isEmpty) continue;
+      if (text == null || text.trim().isEmpty) {
+        // Normal silence takes seconds. Returning instantly means the
+        // recognizer is failing; back off instead of spinning on it.
+        if (DateTime.now().difference(started) < const Duration(seconds: 1)) {
+          await Future<void>.delayed(const Duration(seconds: 1));
+        }
+        continue;
+      }
       userText = text;
       subtitle = '';
       await _turn(() async => api.message(text, timezone: await timezone()));

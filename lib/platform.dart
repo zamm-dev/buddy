@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:alarm/alarm.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -17,13 +18,24 @@ class SttEars implements Ears {
   /// permission was denied.
   Future<bool> init() => _stt.initialize(
     onStatus: (status) {
+      debugPrint('stt status: $status');
       if (status == SpeechToText.doneStatus) _finish(null);
     },
-    onError: (_) => _finish(null),
+    onError: (error) {
+      debugPrint(
+        'stt error: ${error.errorMsg} (permanent: ${error.permanent})',
+      );
+      _finish(null);
+    },
   );
 
   @override
   Future<String?> listen() async {
+    // Android ignores a new session until the previous one has fully ended
+    // ("capacity is full"), and reports it as an error.
+    while (_stt.isListening) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
     final utterance = _utterance = Completer<String?>();
     await _stt.listen(
       onResult: (result) {
