@@ -183,7 +183,8 @@ void main() {
     });
 
     test('is trimmed to what was heard, and the model is told', () async {
-      await c.message('wait', timezone: la, heard: 'Okay. Your gym alarm');
+      c.interrupt('Okay. Your gym alarm');
+      await c.message('wait', timezone: la);
 
       expect(texts(llm.inputs.last), [
         'user: gym alarm at 7',
@@ -201,7 +202,8 @@ void main() {
     });
 
     test('heard nothing drops all of its text', () async {
-      await c.message('wait', timezone: la, heard: '');
+      c.interrupt('');
+      await c.message('wait', timezone: la);
 
       expect(texts(llm.inputs.last), [
         'user: gym alarm at 7',
@@ -211,8 +213,24 @@ void main() {
       ]);
     });
 
+    test('an interrupt before the reply arrives cancels the turn', () async {
+      llm.hold = Completer();
+      final pending = c.message('tell me a story', timezone: la);
+      await Future<void>.delayed(Duration.zero);
+
+      c.interrupt('');
+
+      expect(await pending, isNull);
+      expect(texts(c.history.items).sublist(3), [
+        'user: tell me a story',
+        'developer: The user interrupted you before hearing any of your '
+            'reply.',
+      ]);
+    });
+
     test('trim survives a restart', () async {
-      await c.message('wait', timezone: la, heard: 'Okay.');
+      c.interrupt('Okay.');
+      await c.message('wait', timezone: la);
 
       expect(texts(conversation().history.items).sublist(0, 2), [
         'user: gym alarm at 7',
@@ -256,14 +274,8 @@ void main() {
       });
     });
 
-    test('POST /message accepts heard', () async {
-      llm.outputs.add([say('Hi')]);
-      final res = await post('message', {
-        'text': 'hello',
-        'timezone': la,
-        'heard': '',
-      });
-      expect(res.statusCode, 200);
+    test('POST /interrupt returns 204', () async {
+      expect((await post('interrupt', {'heard': ''})).statusCode, 204);
     });
 
     test('bad input returns 400', () async {
@@ -273,14 +285,8 @@ void main() {
         400,
       );
       expect((await post('message', 'not an object')).statusCode, 400);
-      expect(
-        (await post('message', {
-          'text': 'hi',
-          'timezone': la,
-          'heard': 3,
-        })).statusCode,
-        400,
-      );
+      expect((await post('interrupt')).statusCode, 400);
+      expect((await post('interrupt', {'heard': 3})).statusCode, 400);
     });
 
     test('model failure is spoken, not silent', () async {

@@ -20,14 +20,17 @@ Handler api(Conversation conversation) =>
               (body) => conversation.message(
                 _string(body, 'text'),
                 timezone: _string(body, 'timezone'),
-                heard: switch (body['heard']) {
-                  null => null,
-                  final String heard => heard,
-                  _ => throw BadRequest('heard must be a string'),
-                },
               ),
             ),
           )
+          ..post('/interrupt', (Request request) async {
+            try {
+              conversation.interrupt(_string(await _json(request), 'heard'));
+            } on BadRequest catch (e) {
+              return Response.badRequest(body: e.message);
+            }
+            return Response(HttpStatus.noContent);
+          })
           ..post(
             '/alarm-failed',
             (Request request) => _reply(

@@ -43,10 +43,12 @@ Repo layout:
 
 | Endpoint | Request body | Called when | Response |
 |---|---|---|---|
-| `POST /message` | `{text, timezone, heard?}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if a newer request superseded it |
+| `POST /message` | `{text, timezone}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if a newer request superseded it |
+| `POST /interrupt` | `{heard}` | The user presses the interrupt button | `204` |
 | `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if superseded |
 
-- **`heard`** is sent only if the user interrupted the previous reply. It holds the part of that reply's `text` that was spoken before TTS stopped, taken from `flutter_tts`'s progress handler; use `""` if nothing was spoken. There is no separate interrupt endpoint.
+- **`heard`** is the part of the current reply's `text` that was spoken before TTS stopped. The app gets it from `flutter_tts`'s progress handler and sends `""` if nothing was spoken.
+- **The server holds all conversation state.** The app keeps nothing between requests; it calls `/interrupt` right away instead of saving anything for later.
 
 - **Reply fields** (`200 {text, alarms}`):
   - `alarms` is a list of `{at, label}`, with `at` an ISO 8601 instant in UTC. The app schedules these first.
@@ -102,9 +104,13 @@ The app has no logic beyond calling these endpoints and acting on their replies.
     4. returns the alarm in the reply's `alarms`, together with the confirmation in `text`.
   - If the app later calls `/alarm-failed`, the server adds it to the history and has the LLM tell the user.
 - **Interrupts:** the model should only see what the user actually heard.
-  - When `/message` includes `heard`, trim the previous turn's assistant text to `heard`. Assistant text beyond that point is dropped. Tool calls are kept, because their alarms were still scheduled.
-  - Then append a `developer` message saying the user interrupted, followed by the user message, and continue from there.
-  - Any new request cancels a turn that's still in flight. The superseded request gets `204`.
+  - On `/interrupt`:
+    1. Cancel any in-flight turn. Its pending request gets `204`.
+    2. Trim the last turn's assistant text to `heard`, dropping everything after it. Keep tool calls, because their alarms were still scheduled.
+    3. Append a `developer` message saying the user interrupted.
+
+    The result is the canonical history, and the next `/message` continues from it.
+  - Any new request also cancels a turn that's still in flight.
 
 ### Network: Tailscale, not ngrok
 
@@ -128,12 +134,10 @@ listen → end of speech → POST /message ─▶ set alarms, speak text → TTS
 - **Subtitles:** show the reply's `text` while it's being spoken.
 - **Interrupt button:** always visible while waiting on the server or speaking. Pressing it:
   1. stops TTS immediately,
-  2. remembers how much of the reply was spoken, to send as `heard` with the next `/message`,
+  2. calls `POST /interrupt` with `heard`, the part of the reply that was spoken (`""` if the reply hadn't arrived yet),
   3. returns to listening.
 
-  If a reply arrives after the button was pressed:
-  - still schedule its `alarms`, because the server has recorded them as set,
-  - don't speak its `text`, and send `heard: ""` with the next message.
+  If a reply arrives after the button was pressed, still schedule its `alarms` (the server has recorded them as set), but don't speak its `text`.
 
   This is the only way to cut the AI off. Talking over it isn't supported, because the mic would hear the phone's own speaker.
 - **Alarms:**

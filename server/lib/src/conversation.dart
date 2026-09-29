@@ -80,21 +80,31 @@ class Conversation {
   final DateTime Function() _clock;
   Completer<void>? _inFlight;
 
-  /// The user said [text]. If they cut off the previous reply, [heard] is the
-  /// part of it that was spoken; the rest is dropped from history. Returns
-  /// null if a newer request superseded this turn.
-  Future<Reply?> message(
-    String text, {
-    required String timezone,
-    String? heard,
-  }) {
+  /// The user said [text]. Returns null if a newer request superseded this
+  /// turn.
+  Future<Reply?> message(String text, {required String timezone}) {
     if (text.trim().isEmpty) throw BadRequest('text must not be empty');
     final location = _start(timezone);
     final now = _clock();
     final lastAt = history.lastAt;
-    if (heard != null) history.trimLastReply(heard, now);
     history.append([
-      if (heard != null)
+      if (lastAt != null && now.difference(lastAt) >= timeUpdateGap)
+        _message('developer', 'Time update: ${_now(location)}.'),
+      _message('user', text),
+    ], now);
+    return _turn();
+  }
+
+  /// The user cut off the reply after hearing only [heard] of it. Cancels any
+  /// in-flight turn, trims the last reply in history to what was heard, and
+  /// tells the model, so history matches what the user actually heard.
+  void interrupt(String heard) {
+    _cancelInFlight();
+    if (history.instructions == null) return;
+    final now = _clock();
+    history
+      ..trimLastReply(heard, now)
+      ..append([
         _message(
           'developer',
           heard.isEmpty
@@ -102,11 +112,7 @@ class Conversation {
               : 'The user interrupted you; they only heard your reply up to '
                     'where it ends above.',
         ),
-      if (lastAt != null && now.difference(lastAt) >= timeUpdateGap)
-        _message('developer', 'Time update: ${_now(location)}.'),
-      _message('user', text),
-    ], now);
-    return _turn();
+      ], now);
   }
 
   /// The phone couldn't schedule an alarm it was given. Returns null if a
