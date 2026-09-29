@@ -82,26 +82,49 @@ class TtsMouth implements Mouth {
   Future<void> stop() => _tts.stop();
 }
 
-/// Real alarms via the `alarm` package (AlarmManager + full-screen alert).
+/// Real alarms via the `alarm` package (AlarmManager + full-screen alert),
+/// using the server's alarm ids.
 class PhoneAlarmClock implements AlarmClock {
   @override
-  Future<void> schedule(AlarmRequest alarm) async {
-    final ok = await Alarm.set(
-      alarmSettings: AlarmSettings(
-        // Stable per alarm, never 0 or -1.
-        id: Object.hash(alarm.at, alarm.label) & 0x7fffffff | 1,
-        dateTime: alarm.at.toLocal(),
-        // null = the device's default alarm sound.
-        assetAudioPath: null,
-        warningNotificationOnKill: false,
-        volumeSettings: const VolumeSettings.fixed(),
-        notificationSettings: NotificationSettings(
-          title: 'buddy',
-          body: alarm.label,
-          stopButton: 'Stop',
-        ),
-      ),
-    );
-    if (!ok) throw StateError('The alarm plugin refused to set the alarm');
+  Future<List<(BuddyAlarm, Object)>> sync(List<BuddyAlarm> upcoming) async {
+    final now = DateTime.now();
+    final wanted = {for (final alarm in upcoming) alarm.id: alarm};
+    final failures = <(BuddyAlarm, Object)>[];
+
+    for (final existing in await Alarm.getAlarms()) {
+      // Leave anything ringing or already past alone; stop() would silence it.
+      if (!existing.dateTime.isAfter(now)) continue;
+      final alarm = wanted[existing.id];
+      if (alarm == null) {
+        await Alarm.stop(existing.id);
+      } else if (existing.dateTime.isAtSameMomentAs(alarm.at) &&
+          existing.notificationSettings.title == alarm.label) {
+        wanted.remove(alarm.id); // Already set as-is.
+      }
+    }
+
+    for (final alarm in wanted.values) {
+      try {
+        final ok = await Alarm.set(alarmSettings: _settings(alarm));
+        if (!ok) throw StateError('The alarm plugin refused to set the alarm');
+      } catch (e) {
+        failures.add((alarm, e));
+      }
+    }
+    return failures;
   }
+
+  static AlarmSettings _settings(BuddyAlarm alarm) => AlarmSettings(
+    id: alarm.id,
+    dateTime: alarm.at.toLocal(),
+    // null = the device's default alarm sound.
+    assetAudioPath: null,
+    warningNotificationOnKill: false,
+    volumeSettings: const VolumeSettings.fixed(),
+    notificationSettings: NotificationSettings(
+      title: alarm.label,
+      body: 'buddy alarm',
+      stopButton: 'Stop',
+    ),
+  );
 }

@@ -6,6 +6,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'src/conversation.dart';
 
+export 'src/alarms.dart';
 export 'src/codex_client.dart';
 export 'src/conversation.dart';
 export 'src/history.dart';
@@ -15,6 +16,19 @@ Handler api(Conversation conversation) =>
     (Router()
           // For checking the server is up without touching the conversation.
           ..get('/health', (Request request) => Response.ok('ok'))
+          // Every alarm, newest first, for the app's alarm history.
+          ..get('/alarms', (Request request) {
+            final now = DateTime.now();
+            return Response.ok(
+              jsonEncode({
+                'alarms': [
+                  for (final alarm in conversation.history.alarms.all())
+                    {...alarm.toJson(), 'status': alarm.statusAt(now)},
+                ],
+              }),
+              headers: {'Content-Type': 'application/json'},
+            );
+          })
           ..post(
             '/message',
             (Request request) => _reply(
@@ -38,8 +52,10 @@ Handler api(Conversation conversation) =>
             (Request request) => _reply(
               request,
               (body) => conversation.alarmFailed(
-                label: _string(body, 'label'),
-                at: _string(body, 'at'),
+                id: switch (body['id']) {
+                  final int id => id,
+                  _ => throw BadRequest('Missing int field: id'),
+                },
                 error: _string(body, 'error'),
                 timezone: _string(body, 'timezone'),
               ),

@@ -41,14 +41,23 @@ class FakeMouth implements Mouth {
   }
 }
 
+/// Records each sync; alarms whose id is in [errors] fail to set.
 class FakeAlarms implements AlarmClock {
-  final scheduled = <AlarmRequest>[];
-  Object? error;
+  List<BuddyAlarm> scheduled = [];
+  var syncs = 0;
+  final errors = <int, Object>{};
 
   @override
-  Future<void> schedule(AlarmRequest alarm) async {
-    if (error case final error?) throw error;
-    scheduled.add(alarm);
+  Future<List<(BuddyAlarm, Object)>> sync(List<BuddyAlarm> upcoming) async {
+    syncs++;
+    scheduled = [
+      for (final alarm in upcoming)
+        if (!errors.containsKey(alarm.id)) alarm,
+    ];
+    return [
+      for (final alarm in upcoming)
+        if (errors[alarm.id] case final error?) (alarm, error),
+    ];
   }
 }
 
@@ -110,7 +119,7 @@ void main() {
   });
   tearDown(() => loop.dispose());
 
-  final gymAlarm = {'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'};
+  final gymAlarm = {'id': 7, 'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'};
 
   test('a turn sets alarms, speaks the reply, then listens again', () async {
     ears.heard.add('gym alarm at 7');
@@ -184,6 +193,25 @@ void main() {
     },
   );
 
+  test('every reply syncs the full alarm list, even an empty one', () async {
+    ears.heard.addAll(['gym alarm at 7', 'actually cancel it']);
+    server
+      ..reply('message', {
+        'text': 'Set.',
+        'alarms': [gymAlarm],
+      })
+      ..reply('message', {'text': 'Cancelled.', 'alarms': []});
+
+    unawaited(loop.run());
+    await settle();
+    expect(alarms.scheduled.single.id, 7);
+    mouth.finish();
+    await settle();
+
+    expect(alarms.syncs, 2);
+    expect(alarms.scheduled, isEmpty);
+  });
+
   test('a superseded turn (204) goes back to listening', () async {
     ears.heard.add('hello');
     server.reply('message', null);
@@ -197,7 +225,7 @@ void main() {
 
   test('a failed alarm is reported and the reply spoken', () async {
     ears.heard.add('gym alarm at 7');
-    alarms.error = StateError('permission denied');
+    alarms.errors[7] = StateError('permission denied');
     server
       ..reply('message', {
         'text': 'Set for 7.',
@@ -215,8 +243,7 @@ void main() {
 
     final (path, body) = server.requests.last;
     expect(path, 'alarm-failed');
-    expect(body['label'], 'gym');
-    expect(body['at'], '2026-09-30T14:00:00.000Z');
+    expect(body['id'], 7);
     expect(body['error'], contains('permission denied'));
     expect(mouth.spoken.last, "Sorry, I couldn't set it.");
   });

@@ -2,18 +2,39 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-/// An alarm the server wants scheduled.
-class AlarmRequest {
-  AlarmRequest(this.at, this.label);
+/// An alarm as the server knows it.
+class BuddyAlarm {
+  BuddyAlarm(this.id, this.at, this.label, {this.status = 'upcoming'});
+
+  BuddyAlarm.fromJson(Map<String, dynamic> json)
+    : this(
+        json['id'] as int,
+        DateTime.parse(json['at'] as String),
+        json['label'] as String,
+        status: json['status'] as String? ?? 'upcoming',
+      );
+
+  final int id;
   final DateTime at;
   final String label;
+
+  /// `upcoming`, `rang`, `deleted` or `failed`.
+  final String status;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'at': at.toUtc().toIso8601String(),
+    'label': label,
+    'status': status,
+  };
 }
 
-/// The server's answer to a turn: schedule [alarms], then speak [text].
+/// The server's answer to a turn: make the phone's alarms match [alarms]
+/// (every upcoming alarm), then speak [text].
 class Reply {
   Reply(this.text, this.alarms);
   final String text;
-  final List<AlarmRequest> alarms;
+  final List<BuddyAlarm> alarms;
 }
 
 /// Client for the buddy server. See AGENTS.md for the protocol.
@@ -35,15 +56,27 @@ class BuddyApi {
 
   /// Returns null if the turn was superseded.
   Future<Reply?> alarmFailed({
-    required AlarmRequest alarm,
+    required BuddyAlarm alarm,
     required String error,
     required String timezone,
   }) => _turn('alarm-failed', {
-    'label': alarm.label,
-    'at': alarm.at.toUtc().toIso8601String(),
+    'id': alarm.id,
     'error': error,
     'timezone': timezone,
   });
+
+  /// Every alarm, newest first, with its status.
+  Future<List<BuddyAlarm>> alarms() async {
+    final res = await _client.get(baseUrl.resolve('alarms'));
+    if (res.statusCode != 200) {
+      throw http.ClientException('HTTP ${res.statusCode}: ${res.body}');
+    }
+    final json = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    return [
+      for (final alarm in json['alarms'] as List)
+        BuddyAlarm.fromJson(alarm as Map<String, dynamic>),
+    ];
+  }
 
   Future<Reply?> _turn(String path, Map<String, Object> body) async {
     final res = await _post(path, body);
@@ -51,10 +84,7 @@ class BuddyApi {
     final json = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
     return Reply(json['text'] as String, [
       for (final alarm in json['alarms'] as List)
-        AlarmRequest(
-          DateTime.parse((alarm as Map)['at'] as String),
-          alarm['label'] as String,
-        ),
+        BuddyAlarm.fromJson(alarm as Map<String, dynamic>),
     ]);
   }
 

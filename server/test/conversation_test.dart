@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:buddy_server/buddy_server.dart';
 import 'package:shelf/shelf.dart';
+import 'package:sqlite3/sqlite3.dart';
 import 'package:test/test.dart';
 // latest_all includes alias zones such as Asia/Phnom_Penh; latest doesn't.
 import 'package:timezone/data/latest_all.dart' as tz_data;
@@ -39,12 +40,17 @@ Item say(String text) => {
   ],
 };
 
-Item setAlarm(String time, String label) => {
+var _calls = 0;
+
+Item toolCall(String name, Map<String, Object> args) => {
   'type': 'function_call',
-  'call_id': 'call_1',
-  'name': 'set_alarm',
-  'arguments': jsonEncode({'time': time, 'label': label}),
+  'call_id': 'call_${++_calls}',
+  'name': name,
+  'arguments': jsonEncode(args),
 };
+
+Item setAlarm(String time, String label) =>
+    toolCall('set_alarm', {'time': time, 'label': label});
 
 const la = 'America/Los_Angeles';
 
@@ -83,12 +89,16 @@ void main() {
     expect(reply!.toJson(), {
       'text': 'Alarm set for 7 for the gym.',
       'alarms': [
-        {'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'},
+        {'id': 1, 'at': '2026-09-30T14:00:00.000Z', 'label': 'gym'},
       ],
     });
     final toolOutput = llm.inputs[1].last;
     expect(toolOutput['type'], 'function_call_output');
-    expect(toolOutput['output'], 'Alarm sent to the phone.');
+    expect(
+      toolOutput['output'],
+      'Set alarm 1: Wednesday 2026-09-30T07:00:00-07:00 '
+      '(America/Los_Angeles), "gym".',
+    );
   });
 
   test(
@@ -247,17 +257,145 @@ void main() {
     });
   });
 
-  test('alarm failure is reported to the model', () async {
-    final c = conversation();
-    llm.outputs.add([say('Sorry, that alarm failed.')]);
-    final reply = await c.alarmFailed(
-      label: 'gym',
-      at: '2026-09-30T14:00:00Z',
-      error: 'permission denied',
-      timezone: la,
-    );
-    expect(reply!.text, 'Sorry, that alarm failed.');
-    expect(texts(llm.inputs.last).single, contains('permission denied'));
+  group('alarms', () {
+    late Conversation c;
+
+    /// Runs one turn in which the model makes [calls], then says "ok".
+    Future<Reply> turn(List<Item> calls) async {
+      llm.outputs
+        ..add(calls)
+        ..add([say('ok')]);
+      return (await c.message('do it', timezone: la))!;
+    }
+
+    String lastToolOutput() => llm.inputs.last.lastWhere(
+      (i) => i['type'] == 'function_call_output',
+    )['output'];
+
+    setUp(() => c = conversation());
+
+    test('placeholder labels are rejected so the model asks', () async {
+      final reply = await turn([
+        setAlarm('2026-09-30T07:00:00-07:00', 'Alarm'),
+      ]);
+      expect(reply.alarms, isEmpty);
+      expect(lastToolOutput(), contains('Ask the user what the alarm is for'));
+    });
+
+    test('update changes time and label; the reply carries it', () async {
+      await turn([setAlarm('2026-09-30T07:00:00-07:00', 'gym')]);
+      final reply = await turn([
+        toolCall('update_alarm', {
+          'id': 1,
+          'time': '2026-09-30T08:00:00-07:00',
+          'label': 'gym with Sam',
+        }),
+      ]);
+      expect(reply.toJson()['alarms'], [
+        {'id': 1, 'at': '2026-09-30T15:00:00.000Z', 'label': 'gym with Sam'},
+      ]);
+    });
+
+    test('update can change just the label', () async {
+      await turn([setAlarm('2026-09-30T07:00:00-07:00', 'gym')]);
+      final reply = await turn([
+        toolCall('update_alarm', {'id': 1, 'label': 'test'}),
+      ]);
+      expect(reply.alarms.single.label, 'test');
+      expect(reply.alarms.single.at, DateTime.utc(2026, 9, 30, 14));
+    });
+
+    test('delete drops it from the reply and history shows it', () async {
+      await turn([setAlarm('2026-09-30T07:00:00-07:00', 'gym')]);
+      final reply = await turn([
+        toolCall('delete_alarm', {'id': 1}),
+      ]);
+      expect(reply.alarms, isEmpty);
+      expect(c.history.alarms.all().single.statusAt(now), 'deleted');
+    });
+
+    test('past, deleted or unknown alarms cannot be changed', () async {
+      await turn([setAlarm('2026-09-30T07:00:00-07:00', 'gym')]);
+      await turn([
+        toolCall('delete_alarm', {'id': 1}),
+      ]);
+      await turn([
+        toolCall('update_alarm', {'id': 1, 'label': 'x'}),
+      ]);
+      expect(lastToolOutput(), contains('no upcoming alarm with id 1'));
+      await turn([
+        toolCall('delete_alarm', {'id': 42}),
+      ]);
+      expect(lastToolOutput(), contains('no upcoming alarm with id 42'));
+    });
+
+    test('list shows upcoming and past alarms with ids', () async {
+      await turn([
+        setAlarm('2026-09-30T07:00:00-07:00', 'gym'),
+        setAlarm('2026-09-30T09:00:00-07:00', 'dentist'),
+      ]);
+      await turn([
+        toolCall('delete_alarm', {'id': 2}),
+      ]);
+      now = now.add(const Duration(days: 1)); // The gym alarm has rung.
+      await turn([toolCall('list_alarms', {})]);
+      expect(
+        lastToolOutput(),
+        'Upcoming:\n'
+        '(none)\n'
+        'Recent past:\n'
+        '- 2: Wednesday 2026-09-30T09:00:00-07:00 (America/Los_Angeles), '
+        '"dentist" (deleted)\n'
+        '- 1: Wednesday 2026-09-30T07:00:00-07:00 (America/Los_Angeles), '
+        '"gym" (rang)',
+      );
+    });
+
+    test('a failed alarm is marked failed and reported', () async {
+      await turn([setAlarm('2026-09-30T07:00:00-07:00', 'gym')]);
+      llm.outputs.add([say('Sorry, that alarm failed.')]);
+      final reply = await c.alarmFailed(
+        id: 1,
+        error: 'permission denied',
+        timezone: la,
+      );
+      expect(reply!.text, 'Sorry, that alarm failed.');
+      expect(reply.alarms, isEmpty);
+      expect(texts(llm.inputs.last).last, contains('permission denied'));
+      expect(c.history.alarms.byId(1)!.status, 'failed');
+    });
+
+    test('alarms set before the alarms table existed are backfilled', () {
+      // An old database: set_alarm calls in items, no alarms table.
+      c.history.alarms; // Tables exist now; simulate the old layout.
+      final db = sqlite3.open(dbPath)..execute('DROP TABLE alarms');
+      final accepted = setAlarm('2026-09-30T07:00:00-07:00', 'gym');
+      final rejected = setAlarm('2026-09-30T07:00:00', 'bad');
+      for (final item in [
+        accepted,
+        {
+          'type': 'function_call_output',
+          'call_id': accepted['call_id'],
+          'output': 'Alarm sent to the phone.',
+        },
+        rejected,
+        {
+          'type': 'function_call_output',
+          'call_id': rejected['call_id'],
+          'output': 'Error: time must be ISO 8601 with a UTC offset.',
+        },
+      ]) {
+        db.execute('INSERT INTO items (at, item) VALUES (?, ?)', [
+          '2026-09-30T04:00:00.000Z',
+          jsonEncode(item),
+        ]);
+      }
+      db.close();
+
+      final alarms = History(dbPath).alarms.all();
+      expect(alarms.single.label, 'gym');
+      expect(alarms.single.at, DateTime.utc(2026, 9, 30, 14));
+    });
   });
 
   group('HTTP API', () {
@@ -288,6 +426,26 @@ void main() {
       );
       expect(res.statusCode, 200);
       expect(File(dbPath).existsSync() ? History(dbPath).items : [], isEmpty);
+    });
+
+    test('GET /alarms lists every alarm with its status', () async {
+      llm.outputs
+        ..add([setAlarm('2099-01-01T07:00:00Z', 'far future')])
+        ..add([say('ok')]);
+      await post('message', {'text': 'hi', 'timezone': la});
+      final res = await handler(
+        Request('GET', Uri.parse('http://buddy/alarms')),
+      );
+      expect(jsonDecode(await res.readAsString()), {
+        'alarms': [
+          {
+            'id': 1,
+            'at': '2099-01-01T07:00:00.000Z',
+            'label': 'far future',
+            'status': 'upcoming',
+          },
+        ],
+      });
     });
 
     test('POST /interrupt returns 204', () async {

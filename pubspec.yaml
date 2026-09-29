@@ -45,6 +45,7 @@ dependencies:
   # 13.x needs compileSdk "android-37", which AGP 9.1 can't match to the
   # installed "android-37.0" platform.
   permission_handler: ^12.0.1
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

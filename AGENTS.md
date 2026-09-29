@@ -13,6 +13,7 @@ An Android app (Flutter) with two features:
 
 - **KISS. Keep the app as thin as possible.** Use existing packages and services instead of writing our own. If a pub.dev package or an off-the-shelf tool does the job, use it.
 - **The backend owns all conversation logic.** The app only reports what the user said or pressed, and does what the backend tells it: speak text, show subtitles, schedule alarms. The app never talks to the LLM, never builds prompts and never stores history.
+- **Cache on the phone; refresh as needed.** Anything the app can cache, it persists locally and shows immediately, then refreshes from the server in the background. Nothing the user has already seen should wait on a network round trip, and it should still show when offline.
 - **Android only**, for now. Don't add iOS-specific work.
 
 ## Architecture
@@ -23,7 +24,7 @@ Android phone (Flutter, thin client)        Mac (always on)
 │ speech_to_text (STT)       │  requests    │ buddy server (Dart, shelf)   │
 │ interrupt button           ├─────────────▶│  - conversation history      │
 │                            │  Tailscale   │  - prompts + time context    │
-│ flutter_tts (speak)        │◀─────────────┤  - tool calls (set_alarm)    │
+│ flutter_tts (speak)        │◀─────────────┤  - alarms (source of truth)  │
 │ subtitles                  │  replies     │                              │
 │ alarm package (ring)       │              └──────────────┬───────────────┘
 └────────────────────────────┘                             │ HTTPS, Codex OAuth token
@@ -45,14 +46,17 @@ Repo layout:
 |---|---|---|---|
 | `POST /message` | `{text, timezone}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if a newer request superseded it |
 | `POST /interrupt` | `{heard}` | The user presses the interrupt button | `204` |
-| `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if superseded |
+| `POST /alarm-failed` | `{id, error, timezone}` | The app couldn't set an alarm it was given | `200 {text, alarms}`, or `204` if superseded |
+| `GET /alarms` | none | Refreshing the alarm history | `200 {alarms}`: every alarm, newest first, each `{id, at, label, status}` |
 | `GET /health` | none | Checking the server is up (never touches the conversation) | `200 ok` |
 
 - **`heard`** is the part of the current reply's `text` that was spoken before TTS stopped. The app gets it from `flutter_tts`'s progress handler and sends `""` if nothing was spoken.
 - **The server holds all conversation state.** The app keeps nothing between requests; it calls `/interrupt` right away instead of saving anything for later.
 
 - **Reply fields** (`200 {text, alarms}`):
-  - `alarms` is a list of `{at, label}`, with `at` an ISO 8601 instant in UTC. The app schedules these first.
+  - `alarms` is **every upcoming alarm**, each `{id, at, label}`, with `at` an ISO 8601 instant in UTC.
+    - The app first makes its scheduled alarms match this list exactly: it sets new or changed alarms (using the server's `id` as the plugin's alarm id) and cancels the rest. Alarms that are ringing or already past are left alone.
+    - Sending the whole list means edits and deletions need no special handling, and any drift is corrected on the next reply.
   - `text` is shown as a subtitle and spoken with TTS. Then the app resumes listening.
 - **Errors:**
   - Bad input returns `400` with a plain-text reason.
@@ -77,7 +81,7 @@ The app has no logic beyond calling these endpoints and acting on their replies.
     - Body: `model`, `instructions`, `input`, `tools`, `tool_choice: "auto"`, `parallel_tool_calls: false`, `store: false`, `stream: true`, `include: []`.
     - The endpoint keeps no state (`store: false`), so the full history goes in `input` on every call.
     - Read the SSE stream and collect the items from the `response.output_item.done` events.
-    - Custom function tools work: `set_alarm` was called with correct arguments, and a `function_call_output` gave a spoken confirmation.
+    - Custom function tools work: `set_alarm` was called with correct arguments, and a `function_call_output` led to a spoken confirmation.
   - **Token refresh** (from `codex-rs/login/src/auth/manager.rs`):
     - Request: `POST https://auth.openai.com/oauth/token`.
     - JSON body: `{client_id, grant_type: "refresh_token", refresh_token}`. `client_id` is the Codex CLI's public client ID, `CLIENT_ID` in that file.
@@ -93,21 +97,26 @@ The app has no logic beyond calling these endpoints and acting on their replies.
 - **System prompt:** sent as the request's `instructions` field. It's written once at the start of the conversation and never rewritten. It contains:
   - the current local date and time, UTC offset and IANA timezone,
   - an instruction to keep replies short and conversational, because they're spoken aloud,
-  - instructions for using `set_alarm`, including asking when the purpose or time is unclear.
+  - how to use the alarm tools, including asking when the purpose or time is unclear.
 - **Time updates:** when a `/message` request arrives **5 minutes or more** after the last message, append a message with the current local date and time, UTC offset and IANA timezone (from the request), just before the user message. Never edit earlier messages.
   - Use role **`developer`**. The endpoint rejects `system` messages in `input` with `400 System messages are not allowed`.
   - In the spike, the model used a `developer` time update correctly to answer "how long until my alarm?"
-- **Alarm tool.**
-  - The LLM gets one tool, `set_alarm(time, label)`:
-    - `time`: an ISO 8601 datetime with a UTC offset, resolved from what the user said ("7am tomorrow", "in 20 minutes").
-    - `label`: what the alarm is for, taken from the user.
-  - If the purpose or the time is missing or ambiguous, the AI asks before calling the tool.
-  - When the LLM calls the tool, the server:
-    1. converts the time to UTC,
-    2. records a tool result saying the alarm was sent to the phone,
-    3. lets the LLM produce its spoken confirmation,
-    4. returns the alarm in the reply's `alarms`, together with the confirmation in `text`.
-  - If the app later calls `/alarm-failed`, the server adds it to the history and has the LLM tell the user.
+- **Alarms** are stored in the `alarms` table: `id`, `at`, `label`, and `status`, which is `active`, `deleted` or `failed`. An active alarm whose time has passed has rung.
+  - The server is the source of truth; the phone mirrors the upcoming alarms.
+  - Nothing is deleted from the table, so alarm history is complete.
+  - When the table is first created, alarms from older `set_alarm` calls in the conversation are backfilled.
+- **Alarm tools:**
+  - `set_alarm(time, label)`
+  - `update_alarm(id, time?, label?)`
+  - `delete_alarm(id)`
+  - `list_alarms()`: upcoming alarms, plus the 10 most recent past ones with their status.
+
+  `time` is ISO 8601 with the user's UTC offset. Only upcoming alarms can be updated or deleted.
+- **Labels** are what the alarm is for, and they're shown when it rings.
+  - The model must ask if the user hasn't said what the alarm is for.
+  - The server rejects placeholder labels such as "Alarm" with a tool error telling the model to ask.
+  - These rules are in the tool descriptions, because those are sent fresh on every request, unlike the stored system prompt.
+- **`/alarm-failed`** marks the alarm `failed`, so it isn't sent to the phone again. The server adds the failure to the history and has the model tell the user.
 - **Interrupts:** the model should only see what the user actually heard.
   - On `/interrupt`:
     1. Cancel any in-flight turn. Its pending request gets `204`.
