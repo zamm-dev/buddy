@@ -57,16 +57,16 @@ void main() {
   setUpAll(tz_data.initializeTimeZones);
 
   late Directory dir;
-  late File file;
+  late String dbPath;
   late FakeLlm llm;
   late DateTime now;
 
   Conversation conversation() =>
-      Conversation(History(file), llm, clock: () => now);
+      Conversation(History(dbPath), llm, clock: () => now);
 
   setUp(() {
     dir = Directory.systemTemp.createTempSync('buddy_test');
-    file = File('${dir.path}/history.jsonl');
+    dbPath = '${dir.path}/buddy.db';
     llm = FakeLlm();
     now = DateTime.utc(2026, 9, 30, 4); // 21:00 PDT on Sep 29.
   });

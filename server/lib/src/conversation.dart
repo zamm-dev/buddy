@@ -103,7 +103,7 @@ class Conversation {
     if (history.instructions == null) return;
     final now = _clock();
     history
-      ..trimLastReply(heard, now)
+      ..trimLastReply(heard)
       ..append([
         _message(
           'developer',

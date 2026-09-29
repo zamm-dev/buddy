@@ -10,14 +10,14 @@ import 'package:timezone/data/latest.dart' as tz_data;
 ///   the tailnet can reach the server (default: 127.0.0.1).
 /// - `PORT` (default: 8787)
 /// - `BUDDY_MODEL` (default: gpt-6-luna)
-/// - `BUDDY_HISTORY` (default: ~/.buddy/history.jsonl)
+/// - `BUDDY_DB`: SQLite conversation history (default: ~/.buddy/buddy.db)
 /// - `CODEX_AUTH` (default: ~/.codex/auth.json, written by `codex login`)
 Future<void> main() async {
   tz_data.initializeTimeZones();
   final env = Platform.environment;
   final home = env['HOME']!;
   final conversation = Conversation(
-    History(File(env['BUDDY_HISTORY'] ?? '$home/.buddy/history.jsonl')),
+    History(env['BUDDY_DB'] ?? '$home/.buddy/buddy.db'),
     CodexClient(
       authFile: File(env['CODEX_AUTH'] ?? '$home/.codex/auth.json'),
       model: env['BUDDY_MODEL'] ?? 'gpt-6-luna',
