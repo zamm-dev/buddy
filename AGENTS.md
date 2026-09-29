@@ -46,6 +46,7 @@ Repo layout:
 | `POST /message` | `{text, timezone}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if a newer request superseded it |
 | `POST /interrupt` | `{heard}` | The user presses the interrupt button | `204` |
 | `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if superseded |
+| `GET /health` | none | Checking the server is up (never touches the conversation) | `200 ok` |
 
 - **`heard`** is the part of the current reply's `text` that was spoken before TTS stopped. The app gets it from `flutter_tts`'s progress handler and sends `""` if nothing was spoken.
 - **The server holds all conversation state.** The app keeps nothing between requests; it calls `/interrupt` right away instead of saving anything for later.

@@ -13,6 +13,8 @@ export 'src/history.dart';
 /// The app's API. See AGENTS.md.
 Handler api(Conversation conversation) =>
     (Router()
+          // For checking the server is up without touching the conversation.
+          ..get('/health', (Request request) => Response.ok('ok'))
           ..post(
             '/message',
             (Request request) => _reply(

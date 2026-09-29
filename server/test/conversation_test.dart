@@ -282,6 +282,14 @@ void main() {
       });
     });
 
+    test('GET /health returns 200 and leaves history alone', () async {
+      final res = await handler(
+        Request('GET', Uri.parse('http://buddy/health')),
+      );
+      expect(res.statusCode, 200);
+      expect(File(dbPath).existsSync() ? History(dbPath).items : [], isEmpty);
+    });
+
     test('POST /interrupt returns 204', () async {
       expect((await post('interrupt', {'heard': ''})).statusCode, 204);
     });
