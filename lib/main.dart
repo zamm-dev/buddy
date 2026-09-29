@@ -104,16 +104,70 @@ class _HomePageState extends State<HomePage> {
           padding: const EdgeInsets.all(24),
           child: ringing != null
               ? _Ringing(ringing)
-              : _setupError != null
-              ? Center(child: Text(_setupError!, textAlign: TextAlign.center))
-              : _loop == null
-              ? const Center(child: CircularProgressIndicator())
-              : ListenableBuilder(
-                  listenable: _loop!,
-                  builder: (context, _) => _Conversation(_loop!),
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const _NextAlarm(),
+                    const SizedBox(height: 24),
+                    Expanded(
+                      child: _setupError != null
+                          ? Center(
+                              child: Text(
+                                _setupError!,
+                                textAlign: TextAlign.center,
+                              ),
+                            )
+                          : _loop == null
+                          ? const Center(child: CircularProgressIndicator())
+                          : ListenableBuilder(
+                              listenable: _loop!,
+                              builder: (context, _) => _Conversation(_loop!),
+                            ),
+                    ),
+                  ],
                 ),
         ),
       ),
+    );
+  }
+}
+
+/// The soonest scheduled alarm, or that none is set.
+class _NextAlarm extends StatelessWidget {
+  const _NextAlarm();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final localizations = MaterialLocalizations.of(context);
+    return StreamBuilder<AlarmSet>(
+      stream: Alarm.scheduled,
+      initialData: Alarm.scheduled.valueOrNull,
+      builder: (context, snapshot) {
+        final alarms = snapshot.data?.alarms.toList() ?? []
+          ..sort((a, b) => a.dateTime.compareTo(b.dateTime));
+        final next = alarms.firstOrNull;
+        return Card(
+          child: ListTile(
+            leading: Icon(next == null ? Icons.alarm_off : Icons.alarm),
+            title: Text(
+              next == null
+                  ? 'No alarm set'
+                  : '${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(next.dateTime))}'
+                        ' · ${localizations.formatMediumDate(next.dateTime)}',
+              style: theme.textTheme.titleMedium,
+            ),
+            subtitle: next == null
+                ? null
+                : Text(
+                    alarms.length > 1
+                        ? '${next.notificationSettings.body} '
+                              '(+${alarms.length - 1} more)'
+                        : next.notificationSettings.body,
+                  ),
+          ),
+        );
+      },
     );
   }
 }
