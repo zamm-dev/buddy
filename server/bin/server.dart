@@ -3,7 +3,8 @@ import 'dart:io';
 import 'package:buddy_server/buddy_server.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
-import 'package:timezone/data/latest.dart' as tz_data;
+// latest_all includes alias zones such as Asia/Phnom_Penh; latest doesn't.
+import 'package:timezone/data/latest_all.dart' as tz_data;
 
 /// Environment:
 /// - `HOST`: address to listen on. Set it to the Mac's Tailscale IP so only

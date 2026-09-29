@@ -91,7 +91,7 @@ class VoiceLoop extends ChangeNotifier {
     try {
       reply = await request();
     } catch (e) {
-      subtitle = "Can't reach the buddy server: $e";
+      subtitle = 'Problem talking to the buddy server: $e';
       notifyListeners();
       // Don't spin if the server is down; STT would re-trigger immediately.
       await Future<void>.delayed(const Duration(seconds: 2));
