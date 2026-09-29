@@ -26,6 +26,18 @@ flutter test
 
 Expected output ends with `All tests passed!`.
 
+## Server
+
+The conversation backend in `server/` runs on the Mac and uses your ChatGPT subscription through the Codex CLI's login. See `AGENTS.md` for the design.
+
+```bash
+codex login                     # once; writes ~/.codex/auth.json
+cd server
+HOST=<mac-tailscale-ip> dart run bin/server.dart
+```
+
+It listens on `127.0.0.1:8787` by default; set `HOST` to the Mac's Tailscale IP so the phone can reach it. History is kept in `~/.buddy/history.jsonl`. Tests: `cd server && dart test`.
+
 ## Pre-commit hooks
 
 Commits run these checks via [pre-commit](https://pre-commit.com):
