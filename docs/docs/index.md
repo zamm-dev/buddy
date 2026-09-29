@@ -1,0 +1,3 @@
+# buddy
+
+A Flutter app.

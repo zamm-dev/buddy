@@ -12,3 +12,9 @@ repos:
         language: system
         types: [dart]
         pass_filenames: false
+      - id: mkdocs-build
+        name: mkdocs build --strict
+        entry: bash -c 'cd docs && uv run mkdocs build --strict'
+        language: system
+        files: ^docs/
+        pass_filenames: false

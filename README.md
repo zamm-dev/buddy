@@ -32,6 +32,7 @@ Commits run these checks via [pre-commit](https://pre-commit.com):
 
 - `dart format` — formatting
 - `flutter analyze` — linting / static analysis
+- `mkdocs build --strict` — documentation build validation (when `docs/` changes)
 
 Tests run in CI, not in the hooks.
 
@@ -45,4 +46,15 @@ Run manually:
 
 ```bash
 pre-commit run --all-files
+```
+
+## Documentation
+
+Project documentation lives in the `docs/` directory (Material for MkDocs, managed with [uv](https://docs.astral.sh/uv/)).
+
+To run the documentation site locally:
+
+```bash
+cd docs
+uv run mkdocs serve
 ```

@@ -1,0 +1,5 @@
+site_name: buddy
+site_url: https://zamm-dev.github.io/buddy/
+repo_url: https://github.com/zamm-dev/buddy
+theme:
+  name: material
