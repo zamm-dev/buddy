@@ -60,6 +60,8 @@ Repo layout:
 
 The app has no logic beyond calling these endpoints and acting on their replies.
 
+**Checking the real server:** use `GET /health` only. Never `POST` to the running server (default `~/.buddy/buddy.db`) to test or probe it. Every `POST` changes the user's real conversation: `/interrupt` trims the last reply and records an interruption, and `/message` adds a turn. For end-to-end tests, run a separate server with its own `BUDDY_DB` and `PORT`.
+
 ### Server responsibilities
 
 - **LLM access.**
