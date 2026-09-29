@@ -5,7 +5,8 @@ import 'dart:io';
 import 'package:buddy_server/buddy_server.dart';
 import 'package:shelf/shelf.dart';
 import 'package:test/test.dart';
-import 'package:timezone/data/latest.dart' as tz_data;
+// latest_all includes alias zones such as Asia/Phnom_Penh; latest doesn't.
+import 'package:timezone/data/latest_all.dart' as tz_data;
 
 /// Replies with queued outputs and records what it was sent.
 class FakeLlm implements Llm {
@@ -113,6 +114,13 @@ void main() {
       c.history.instructions,
       contains('Tuesday 2026-09-29T21:00:00-07:00 (America/Los_Angeles)'),
     );
+  });
+
+  test('alias timezones such as Asia/Phnom_Penh are accepted', () async {
+    llm.outputs.add([say('Hi')]);
+    final c = conversation();
+    await c.message('hello', timezone: 'Asia/Phnom_Penh');
+    expect(c.history.instructions, contains('+07:00 (Asia/Phnom_Penh)'));
   });
 
   test('history survives a restart', () async {
