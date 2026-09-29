@@ -21,11 +21,12 @@ class FakeLlm implements Llm {
     Future<void>? cancelled,
   }) async {
     inputs.add(input);
+    final output = outputs.removeAt(0);
     if (hold case final hold?) {
       await Future.any([hold.future, ?cancelled]);
       if (!hold.isCompleted) throw Cancelled();
     }
-    return outputs.removeAt(0);
+    return output;
   }
 }
 
@@ -148,20 +149,76 @@ void main() {
     ]);
   });
 
-  test('interrupt cancels the in-flight turn and is recorded', () async {
+  test('a newer message supersedes an in-flight turn', () async {
     final c = conversation();
     llm.hold = Completer();
     llm.outputs.add([say('a long answer')]);
     final pending = c.message('tell me a story', timezone: la);
     await Future<void>.delayed(Duration.zero);
 
-    c.interrupt();
+    llm.hold = null;
+    llm.outputs.add([say('Sure, a short one.')]);
+    final reply = await c.message('make it short', timezone: la);
 
     expect(await pending, isNull);
+    expect(reply!.text, 'Sure, a short one.');
     expect(texts(c.history.items), [
       'user: tell me a story',
-      'developer: The user interrupted your last reply.',
+      'user: make it short',
+      'assistant: Sure, a short one.',
     ]);
+  });
+
+  group('interrupted reply', () {
+    late Conversation c;
+
+    // A turn with two spoken messages around an alarm tool call.
+    setUp(() async {
+      c = conversation();
+      llm.outputs
+        ..add([say('Okay.'), setAlarm('2026-09-30T07:00:00-07:00', 'gym')])
+        ..add([say('Your gym alarm is set for 7 tomorrow.')]);
+      await c.message('gym alarm at 7', timezone: la);
+      llm.outputs.add([say('Sure.')]);
+    });
+
+    test('is trimmed to what was heard, and the model is told', () async {
+      await c.message('wait', timezone: la, heard: 'Okay. Your gym alarm');
+
+      expect(texts(llm.inputs.last), [
+        'user: gym alarm at 7',
+        'assistant: Okay.',
+        'assistant: Your gym alarm',
+        'developer: The user interrupted you; they only heard your reply up '
+            'to where it ends above.',
+        'user: wait',
+      ]);
+      // The alarm was still set, so its tool call stays.
+      expect(
+        llm.inputs.last.where((i) => i['type'] == 'function_call'),
+        hasLength(1),
+      );
+    });
+
+    test('heard nothing drops all of its text', () async {
+      await c.message('wait', timezone: la, heard: '');
+
+      expect(texts(llm.inputs.last), [
+        'user: gym alarm at 7',
+        'developer: The user interrupted you before hearing any of your '
+            'reply.',
+        'user: wait',
+      ]);
+    });
+
+    test('trim survives a restart', () async {
+      await c.message('wait', timezone: la, heard: 'Okay.');
+
+      expect(texts(conversation().history.items).sublist(0, 2), [
+        'user: gym alarm at 7',
+        'assistant: Okay.',
+      ]);
+    });
   });
 
   test('alarm failure is reported to the model', () async {
@@ -199,8 +256,14 @@ void main() {
       });
     });
 
-    test('POST /interrupt returns 204', () async {
-      expect((await post('interrupt')).statusCode, 204);
+    test('POST /message accepts heard', () async {
+      llm.outputs.add([say('Hi')]);
+      final res = await post('message', {
+        'text': 'hello',
+        'timezone': la,
+        'heard': '',
+      });
+      expect(res.statusCode, 200);
     });
 
     test('bad input returns 400', () async {
@@ -210,6 +273,14 @@ void main() {
         400,
       );
       expect((await post('message', 'not an object')).statusCode, 400);
+      expect(
+        (await post('message', {
+          'text': 'hi',
+          'timezone': la,
+          'heard': 3,
+        })).statusCode,
+        400,
+      );
     });
 
     test('model failure is spoken, not silent', () async {

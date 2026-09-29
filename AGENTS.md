@@ -43,9 +43,10 @@ Repo layout:
 
 | Endpoint | Request body | Called when | Response |
 |---|---|---|---|
-| `POST /message` | `{text, timezone}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if the turn was interrupted |
-| `POST /interrupt` | none | The user presses the interrupt button | `204` |
-| `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if interrupted |
+| `POST /message` | `{text, timezone, heard?}` | STT returns a final transcript | `200 {text, alarms}`, or `204` if a newer request superseded it |
+| `POST /alarm-failed` | `{label, at, error, timezone}` | The app couldn't schedule an alarm it was given | `200 {text, alarms}`, or `204` if superseded |
+
+- **`heard`** is sent only if the user interrupted the previous reply. It holds the part of that reply's `text` that was spoken before TTS stopped, taken from `flutter_tts`'s progress handler; use `""` if nothing was spoken. There is no separate interrupt endpoint.
 
 - **Reply fields** (`200 {text, alarms}`):
   - `alarms` is a list of `{at, label}`, with `at` an ISO 8601 instant in UTC. The app schedules these first.
@@ -81,6 +82,7 @@ The app has no logic beyond calling these endpoints and acting on their replies.
 - **Conversation history.**
   - A single ongoing conversation, persisted on the Mac so it survives app and server restarts.
   - Store it as an append-only JSON Lines file, one message per line: system, user, assistant, tool calls and tool results.
+  - Records are never rewritten. The one kind of change, trimming an interrupted reply, is itself appended as a record (`{"at", "heard"}`) and re-applied when the file loads.
 - **System prompt:** sent as the request's `instructions` field. It's written once at the start of the conversation and never rewritten. It contains:
   - the current local date and time, UTC offset and IANA timezone,
   - an instruction to keep replies short and conversational, because they're spoken aloud,
@@ -99,7 +101,10 @@ The app has no logic beyond calling these endpoints and acting on their replies.
     3. lets the LLM produce its spoken confirmation,
     4. returns the alarm in the reply's `alarms`, together with the confirmation in `text`.
   - If the app later calls `/alarm-failed`, the server adds it to the history and has the LLM tell the user.
-- **Interrupts:** on `/interrupt`, cancel any in-flight LLM request, and record in the history that the user cut off the last reply.
+- **Interrupts:** the model should only see what the user actually heard.
+  - When `/message` includes `heard`, trim the previous turn's assistant text to `heard`. Assistant text beyond that point is dropped. Tool calls are kept, because their alarms were still scheduled.
+  - Then append a `developer` message saying the user interrupted, followed by the user message, and continue from there.
+  - Any new request cancels a turn that's still in flight. The superseded request gets `204`.
 
 ### Network: Tailscale, not ngrok
 
@@ -122,9 +127,13 @@ listen → end of speech → POST /message ─▶ set alarms, speak text → TTS
 - **TTS:** use `flutter_tts`, which uses Android's on-device TTS.
 - **Subtitles:** show the reply's `text` while it's being spoken.
 - **Interrupt button:** always visible while waiting on the server or speaking. Pressing it:
-  1. stops TTS locally and immediately; don't wait for the network,
-  2. calls `POST /interrupt`,
+  1. stops TTS immediately,
+  2. remembers how much of the reply was spoken, to send as `heard` with the next `/message`,
   3. returns to listening.
+
+  If a reply arrives after the button was pressed:
+  - still schedule its `alarms`, because the server has recorded them as set,
+  - don't speak its `text`, and send `heard: ""` with the next message.
 
   This is the only way to cut the AI off. Talking over it isn't supported, because the mic would hear the phone's own speaker.
 - **Alarms:**
